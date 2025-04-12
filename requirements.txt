@@ -1,8 +1,0 @@
-fastapi
-uvicorn
-openai
-pandas
-python-multipart
-requests
-python-dotenv
-twilio
