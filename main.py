@@ -1,74 +1,87 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from typing import List
-import pandas as pd
-import os
+from pydantic import BaseModel
+from twilio.rest import Client
 from dotenv import load_dotenv
-import requests
+import os
+import pandas as pd
 import uuid
 
+# Ortam değişkenlerini yükle (.env dosyasından)
 load_dotenv()
 
 app = FastAPI()
 
-# CORS yapılandırması
+# CORS ayarları
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-UPLOAD_FOLDER = "uploaded_customers"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# Twilio bilgileri (ENV’den alınmalı)
+TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_FROM = os.getenv("TWILIO_PHONE_NUMBER")
+
+client = Client(TWILIO_SID, TWILIO_AUTH)
+
+# Geçici müşteri verisi
+customer_data = []
+
+# İstek modelleri
+class ScriptRequest(BaseModel):
+    character_name: str
+    character_description: str
+    prompt: str
+
+class VoiceRequest(BaseModel):
+    text: str
+    voice: str
+
+class CallRequest(BaseModel):
+    to_number: str
+    audio_url: str
+
 
 @app.post("/upload-customers")
 async def upload_customers(file: UploadFile = File(...)):
-    contents = await file.read()
-    filename = f"{uuid.uuid4()}_{file.filename}"
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
-    with open(filepath, "wb") as f:
-        f.write(contents)
+    global customer_data
+    df = pd.read_excel(file.file)
+    customer_data = df.to_dict(orient="records")
+    return {"customers": customer_data}
 
-    # Dosyayı oku
-    df = pd.read_excel(filepath) if file.filename.endswith((".xlsx", ".xls")) else pd.read_csv(filepath)
-    return {"customers": df.to_dict(orient="records")}
 
 @app.post("/generate-script")
-async def generate_script(
-    character_name: str = Form(...),
-    character_description: str = Form(...),
-    prompt: str = Form(...)
-):
-    gpt_prompt = f"{character_name} ({character_description}) karakteriyle konuşma başlat:\n{prompt}"
-    response = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "gpt-3.5-turbo",
-            "messages": [{"role": "user", "content": gpt_prompt}]
-        }
-    )
-    data = response.json()
-    script = data["choices"][0]["message"]["content"]
+def generate_script(data: ScriptRequest):
+    script = f"Merhaba, ben {data.character_name}. {data.character_description}. {data.prompt}"
     return {"script": script}
 
+
 @app.post("/generate-voice")
-async def generate_voice(text: str = Form(...), voice: str = Form(...)):
-    # Bu örnekte ses üretim API'si varsayılmıştır. Gerçek bir API entegre edilecekse burada ayarlanır.
-    return {"audio_path": "https://example.com/fake-audio.mp3"}
+def generate_voice(data: VoiceRequest):
+    audio_url = f"https://your-cdn-or-storage.com/audio/{uuid.uuid4()}.mp3"
+    return {"audio_path": audio_url}
+
 
 @app.post("/start-call")
-async def start_call(to_number: str = Form(...), audio_url: str = Form(...)):
-    # Bu örnek, Twilio üzerinden arama yapıyor.
-    from twilio.rest import Client
-    client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
-    call = client.calls.create(
-        to=to_number,
-        from_=os.getenv("TWILIO_PHONE_NUMBER"),
-        url=audio_url  # Bu gerçek TwiML ya da ses dosy_
+def start_call(data: CallRequest):
+    try:
+        call = client.calls.create(
+            to=data.to_number,
+            from_=TWILIO_FROM,
+            url="https://handler.twilio.com/twiml/EHXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",  # ← BURAYI KENDİ TwiML Bin linkinle değiştir
+            method="GET",
+            status_callback="https://yourdomain.com/callback",  # ← Opsiyonel webhook
+            status_callback_event=["initiated", "ringing", "answered", "completed"],
+            status_callback_method="POST"
+        )
+        return {"status": "OK", "call_sid": call.sid}
+    except Exception as e:
+        return {"status": "ERROR", "detail": str(e)}
+
+
+@app.get("/")
+def read_root():
+    return {"message": "Voice Marketing Backend is running 🚀"}
